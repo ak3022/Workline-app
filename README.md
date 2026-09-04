@@ -1,39 +1,110 @@
+<div align="center">
+
+<img src="docs/screenshots/01-cover.png" alt="Workline" width="320">
+
 # Workline
 
-A self-hosted process tracker for businesses that run the **same handful of
-workflows across many repeating jobs** — manufacturers, exporters,
-wholesalers, garment/textile/food production, print shops. It's a poor fit
-for project-based or bespoke work (agencies, software, construction) where
-every engagement has a different structure.
+**Self-hosted process tracking for businesses that run the same workflows, over and over.**
 
-Admins define:
+[![License: MIT](https://img.shields.io/badge/license-MIT-1E4B7A.svg)](LICENSE)
+![No server to run](https://img.shields.io/badge/backend-Supabase-1E4B7A.svg)
+![Installable PWA](https://img.shields.io/badge/install-Add%20to%20Home%20Screen-1E4B7A.svg)
+
+</div>
+
+---
+
+## What it is
+
+Workline tracks jobs through a fixed sequence of tasks — who owns each step,
+how long it's allowed to take, what depends on what — and keeps everyone
+notified without anyone having to chase anyone else down.
+
+It's built around one idea: **most of what a business tracks per job is
+specific to that business**, so almost nothing here is hardcoded. Admins
+define the process, the fields, and the branding; the app does the rest.
+
+## Who it's for
+
+Businesses that run **the same handful of workflows across many repeating
+jobs** — the value is in defining a process once and reusing it hundreds of
+times:
+
+- Manufacturers and fabricators
+- Exporters and trading houses
+- Wholesalers and distributors
+- Garment, textile, and food production
+- Print shops and light-assembly operations
+
+**Not a fit for:** project-based or bespoke work — agencies, software
+studios, construction, consulting — where every engagement has a different
+structure and a saved template buys you nothing.
+
+## Screenshots
+
+<table>
+<tr>
+<td width="20%" align="center"><img src="docs/screenshots/02-templates.png" width="100%"><br><sub><b>Process templates</b><br>define the task chain once</sub></td>
+<td width="20%" align="center"><img src="docs/screenshots/03-fields.png" width="100%"><br><sub><b>Custom fields</b><br>track what your business needs</sub></td>
+<td width="20%" align="center"><img src="docs/screenshots/04-notifications.png" width="100%"><br><sub><b>Notification digests</b><br>on the days you choose</sub></td>
+<td width="20%" align="center"><img src="docs/screenshots/05-branding.png" width="100%"><br><sub><b>Your branding</b><br>name, color, logo</sub></td>
+</tr>
+</table>
+
+## Features
+
 - **Process templates** — a chain of tasks with dependencies (some start
   after the previous one finishes, some once it merely starts), each with
   an owner and a days-allowed budget. Every new job is instantiated from
-  one of these.
-- **Job fields** — whatever your business actually tracks per job (a batch
-  number, a grade, a width, anything) as text, number, date, or a managed
-  dropdown. Nothing is hardcoded — add, remove, and reorder fields from
-  the Admin screen at any time.
-- **Branding** — company name, brand color, and logo, uploaded right from
-  the Admin screen. Updates the login screen, header, favicon, and PWA
-  home-screen icon everywhere, for everyone.
+  one of these, with its own planned-vs-actual timeline.
+- **Custom job fields** — whatever your business actually tracks per job (a
+  batch number, a grade, a width, anything) as text, number, date, or a
+  managed dropdown. Add, remove, and reorder fields from the Admin screen
+  at any time — nothing is hardcoded to one industry.
+- **Comments & reminders** — comment on any job or task; leave a dated
+  reminder for whoever holds a task, separate from ordinary comments, that
+  stays visible until resolved.
+- **Scheduled push digests** — pick which days of the week notifications go
+  out; each person gets one clear digest of their stale tasks, unread
+  comments, and due reminders — not a ping per item.
+- **In-app branding** — company name, brand color, and logo, uploaded right
+  from the Admin screen. Updates the login screen, header, favicon, and PWA
+  home-screen icon everywhere, for everyone, immediately.
+- **Realtime sync** — every open session updates live as the team works;
+  no refreshing.
+- **Excel exports** — a full data backup and a client-facing status report,
+  both `.xlsx`, both reflecting whatever custom fields you've defined.
 
-Everyone else sees their tasks, comments on any job or task, leaves dated
-reminders for whoever holds a task, and gets a push-notification digest on
-whichever days of the week the admin schedules.
+## How it's built
 
-It's a single static HTML file plus a small Supabase backend — no server to
-run, no build step. **No app store either** — installed via "Add to Home
-Screen" (a real PWA: its own icon, full-screen, push notifications), which
-costs nothing and doesn't require a store review.
+A single static HTML file (vanilla JS, no build step, no framework) talking
+directly to a small [Supabase](https://supabase.com) backend — Postgres,
+auth, realtime, and Edge Functions all in the one free-tier project. Push
+notifications run through a scheduled Edge Function and the standard Web
+Push API. There's no server of your own to run or maintain.
+
+**No app store either.** The app is installed via "Add to Home Screen" — a
+real PWA, its own icon, full-screen, working push notifications — which
+costs nothing and needs no store review. See [below](#wanting-a-real-app-store-listing)
+if you want one anyway.
 
 ## Setup
 
 You'll need a free [Supabase](https://supabase.com) project and a free
-[Netlify](https://netlify.com) site. Ten-ish minutes, no credit card.
+[Netlify](https://netlify.com) site. Ten-ish minutes, no credit card. The
+path is: **get the code → set up the database → deploy it → everyone
+installs it on their phone.**
+
+### 0. Get the code
+
+Click **Use this template** above (or **Code → Download ZIP**, or
+`git clone` this repo) to get your own copy. Everything below happens in
+that copy — nothing is shared with anyone else's deployment.
 
 ### 1. Database
+
+Supabase Dashboard → your project → **SQL Editor** → New query → paste the
+entire contents of [`schema.sql`](schema.sql) → **Run**.
 
 Supabase Dashboard → your project → **SQL Editor** → New query → paste the
 entire contents of [`schema.sql`](schema.sql) → **Run**.
@@ -85,11 +156,29 @@ first admin account. From there: Admin → set your company name, brand
 color, and logo; add your team; build your first process template; define
 whatever job fields your business actually needs.
 
-### 6. Install as an app
+### 6. Everyone installs it on their phone
 
-Open the site on a phone, then "Add to Home Screen" (Safari on iOS,
-Chrome's install prompt on Android). That's the step that also enables
-push notifications on iOS — they don't work in a plain browser tab there.
+This is the step that turns the site into an app — its own icon, full
+screen, no browser bar — and on iOS it's also what switches on push
+notifications, which don't work there in a plain browser tab. Each person
+does this once, on their own phone, after they can sign in:
+
+**iPhone / iPad (Safari — must be Safari, not Chrome):**
+1. Open your deployed URL in Safari and sign in.
+2. Tap the **Share** icon (square with an arrow) in the toolbar.
+3. Scroll down and tap **Add to Home Screen** → **Add**.
+4. Open the app from the new home-screen icon (not Safari) from now on,
+   and allow notifications when it asks.
+
+**Android (Chrome):**
+1. Open your deployed URL in Chrome and sign in.
+2. Tap the **⋮** menu → **Add to Home screen** / **Install app** (or tap
+   the install banner Chrome shows automatically).
+3. Confirm **Install** — it now behaves like any other installed app,
+   including notifications.
+
+**Desktop (Chrome/Edge, optional):** an install icon appears in the
+address bar — click it, or use the browser's menu → **Install Workline**.
 
 ## A note on data access
 
@@ -102,8 +191,8 @@ other's data.
 
 ## Wanting a real app-store listing?
 
-Not something this project does centrally — see the main note above on
-why a per-deployment app doesn't map cleanly onto one store listing. If a
+Not something this project does centrally — a per-deployment app doesn't
+map cleanly onto one store listing (see "How it's built" above). If a
 specific deployment wants one anyway, wrapping a PWA for the Play Store
 costs a one-time $25 Google Play developer fee (paid by whoever wants the
 listing, not baked into this project) — [PWABuilder](https://pwabuilder.com)

@@ -52,7 +52,7 @@ Deno.serve(async (req) => {
       sb.from('tasks').select('id, job_id, name, owner_name, days, status, actual_start, planned_start').neq('status', 'completed'),
       sb.from('task_comments').select('id, task_id, author, acked, created_at').eq('acked', false),
       sb.from('job_comments').select('id, job_id, author, acked, created_at').eq('acked', false),
-      sb.from('jobs').select('id, code'),
+      sb.from('jobs').select('id, code, on_hold'),
       sb.from('task_reminders').select('id, task_id, text, due_date, status').eq('status', 'open'),
       sb.from('push_subscriptions').select('*'),
       sb.from('notification_log').select('person_id').eq('item_type', 'digest').gte('sent_at', todayStartISO),
@@ -71,9 +71,12 @@ Deno.serve(async (req) => {
       pending.get(personName)!.push(line);
     };
 
-    // stale tasks
+    // stale tasks — skipped entirely for a paused job, same as the app's own
+    // display: time spent on hold was never the owner's fault, so it shouldn't
+    // accrue as "stale" while frozen
     for (const t of tasks) {
       if (!t.owner_name) continue;
+      if (jobs.find((j: any) => j.id === t.job_id)?.on_hold) continue;
       let stale = false;
       if (t.status === 'pending' && t.planned_start && t.planned_start <= staleCutoffDate) stale = true;
       if (t.status === 'in_progress' && t.actual_start) {

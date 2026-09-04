@@ -9,6 +9,10 @@ create table people (
   phone text unique,
   color text not null,
   is_admin boolean not null default false,
+  -- Can create jobs (process, fields, setup) and edit a job's own process,
+  -- but not manage the team, alerts, standard process templates, or
+  -- update other people's tasks. Irrelevant if is_admin is already true.
+  is_co_admin boolean not null default false,
   tutorial_seen boolean not null default false,
   auth_user_id uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now()
@@ -79,6 +83,12 @@ create table jobs (
   start_date date not null,
   ship_date date,
   custom_fields jsonb not null default '{}'::jsonb,
+  on_hold boolean not null default false,
+  -- Cumulative days the job's future schedule has shifted by, across every
+  -- pause/resume cycle — added to start_date when recomputing planned
+  -- dates for tasks that haven't happened yet. Completed/in-progress
+  -- tasks' own history is never rewritten.
+  hold_days integer not null default 0,
   created_at timestamptz not null default now()
 );
 
@@ -121,6 +131,22 @@ create table task_edges (
   from_task uuid not null references tasks(id) on delete cascade,
   to_task uuid not null references tasks(id) on delete cascade,
   edge_type text not null default 'FS' check (edge_type in ('FS','SS'))
+);
+
+-- One row per pause/resume cycle, so a long-running job's timeline is
+-- never a mystery — "paused here, resumed there, chosen mode X" stays on
+-- the record even after the job finishes.
+create table job_holds (
+  id uuid primary key default gen_random_uuid(),
+  job_id uuid not null references jobs(id) on delete cascade,
+  task_id uuid references tasks(id) on delete set null,
+  task_name_snapshot text,
+  paused_at date not null,
+  paused_by text,
+  resumed_at date,
+  resumed_by text,
+  resume_mode text check (resume_mode in ('resume','restart')),
+  created_at timestamptz not null default now()
 );
 
 create table task_comments (
@@ -196,6 +222,7 @@ alter table field_options enable row level security;
 alter table jobs enable row level security;
 alter table job_links enable row level security;
 alter table job_comments enable row level security;
+alter table job_holds enable row level security;
 alter table tasks enable row level security;
 alter table task_edges enable row level security;
 alter table task_comments enable row level security;
@@ -213,6 +240,7 @@ create policy "signed-in users only" on field_options for all using (auth.role()
 create policy "signed-in users only" on jobs for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "signed-in users only" on job_links for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "signed-in users only" on job_comments for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "signed-in users only" on job_holds for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "signed-in users only" on tasks for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "signed-in users only" on task_edges for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "signed-in users only" on task_comments for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');

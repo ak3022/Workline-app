@@ -91,6 +91,8 @@
   .chip.client{background:var(--blue);color:#fff}
   .chip.job{background:var(--blue-tint);color:var(--blue)}
   .badge{font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;letter-spacing:.1px;white-space:nowrap}
+  .alert-badge{font-size:12.5px!important;font-weight:800!important;padding:5px 11px!important;background:var(--red)!important;color:#fff!important;
+    box-shadow:0 2px 9px rgba(192,57,43,.45);animation:alertPulse 2.2s ease-in-out infinite}
   .b-overdue{background:var(--red-tint);color:var(--red)}
   .b-soon{background:#FFF3E0;color:var(--orange)}
   .b-done{background:#E7F6EC;color:var(--green)}
@@ -312,8 +314,12 @@
 
 .chart-tip{background:var(--card2);border-radius:12px;padding:11px 13px;font-size:13px;margin-top:10px;min-height:20px;line-height:1.5}
 
-.cmt-chip{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:7px;background:var(--card2);color:var(--ink2);letter-spacing:.1px;white-space:nowrap}
-body.dark .cmt-chip{background:#3A3A3C}
+.cmt-chip{display:inline-flex;align-items:center;gap:3px;font-size:13px;font-weight:800;padding:4px 10px;border-radius:20px;
+  background:var(--orange);color:#fff;letter-spacing:.1px;white-space:nowrap;box-shadow:0 2px 8px rgba(201,122,30,.4);
+  animation:alertPulse 2.2s ease-in-out infinite}
+body.dark .cmt-chip{box-shadow:0 2px 10px rgba(201,122,30,.5)}
+@keyframes alertPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
+@media (prefers-reduced-motion: reduce){.cmt-chip,.alert-badge{animation:none!important}}
 
 .task{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
 .cmt-timeline{margin-top:12px;padding-top:2px}
@@ -541,7 +547,7 @@ function makeJob(code,category,startISO,shipISO,customFields){
   const jid=crypto.randomUUID();
   const tpl=DB.templates[category];
   DB.jobs.push({id:jid,code,client:code.split('-')[0],category,start:startISO,ship:shipISO,links:[],comments:[],
-    customFields:customFields||{}});
+    customFields:customFields||{},onHold:false,holdDays:0,holds:[]});
   const idMap={};
   tpl.tasks.forEach(t=>{
     const newId=crypto.randomUUID(); idMap[t.id]=newId;
@@ -576,7 +582,11 @@ function recomputePlanned(jid,onlyPending){
   const o=jobOf(jid);
   const tasks=DB.tasks.filter(t=>t.jid===jid);
   const edges=DB.edges.filter(e=>e.jid===jid);
-  const planned=computePlannedStarts(tasks,edges,o.start);
+  // holdDays shifts the whole downstream plan by however long the job has
+  // spent on hold across its life — pending tasks' planned dates move, but
+  // completed/in-progress tasks' frozen history (onlyPending skips them
+  // below) is never rewritten, so a pause is visible, not hidden.
+  const planned=computePlannedStarts(tasks,edges,fmtISO(addDays(parseD(o.start),o.holdDays||0)));
   tasks.forEach(t=>{
     if(onlyPending&&t.status!=='pending'&&t.plannedStart)return;
     t.plannedStart=planned.get(t.id);
@@ -590,7 +600,8 @@ function inEdges(id){return DB.edges.filter(e=>e.to===id);}
 function outEdges(id){return DB.edges.filter(e=>e.from===id);}
 function unlockInfo(t){
   const preds=inEdges(t.id);
-  if(!preds.length)return{unlocked:true,since:jobOf(t.jid).start,blockedBy:[]};
+  const o=jobOf(t.jid);
+  if(!preds.length)return{unlocked:true,since:fmtISO(addDays(parseD(o.start),o.holdDays||0)),blockedBy:[]};
   let since=null,blocked=[];
   preds.forEach(e=>{
     const p=DB.tasks.find(x=>x.id===e.from);
@@ -625,9 +636,11 @@ const SM={
   idle:{l:'Not started',c:'b-idle',v:'var(--idle)'},
   ready:{l:'Ready to start',c:'b-pending',v:'var(--ink2)'},
   locked:{l:'Upcoming',c:'b-locked',v:'var(--muted)'},
+  paused:{l:'⏸ On hold',c:'b-locked',v:'var(--ink2)'},
 };
 function statusOf(t){
   if(t.status==='completed')return isDoneLate(t)?'donelate':'done';
+  if(jobOf(t.jid).onHold)return'paused'; // frozen — don't let apparent lateness accrue while paused
   if(t.status==='in_progress')return overdueRunningDays(t)>0?'overdue':'inprog';
   const ph=taskPhase(t);
   if(ph==='locked')return'locked';
@@ -914,7 +927,7 @@ function switchTab(tab){TAB=tab;
   if(TUT_ACTIVE){ const s=tutStepData(TUT_KEYS[TUT_IDX]); if(s&&s.gotoTab===tab) renderTutStep(); }
 }
 function updateFab(){document.getElementById('fab').classList.toggle('hidden',
-  !(ME&&ME.boss&&(TAB==='mine'||TAB==='jobs')));}
+  !(ME&&(ME.boss||ME.coAdmin)&&(TAB==='mine'||TAB==='jobs')));}
 
 /* ================= MY TASKS ================= */
 function renderMine(){
@@ -944,6 +957,7 @@ function taskCard(t){
   else if(s==='inprog'){ due=`Started ${fmtNice(t.actualStart)} · ${t.days}d allowed`; }
   else if(s==='idle'){ due=`Not started for ${idleDaysOf(t)}d · ${t.days}d allowed`; }
   else if(s==='ready'){ due=`${t.days}d allowed`; }
+  else if(s==='paused'){ due=`Job on hold`; }
   else{ const u=unlockInfo(t); due=`Starts after ${u.blockedBy.map(b=>`${b.task.name} ${b.needs}`).join(', ')}`; }
   return `<div class="task tap" style="--st:${m.v};${s==='locked'?'opacity:.6':''}" onclick="openTask('${t.id}')">
     <div class="top">
@@ -968,8 +982,8 @@ const jobCommentCount=jid=>{const o=jobOf(jid);return (o?o.comments.length:0)+DB
 
 function renderJobs(){
   document.getElementById('view-jobs').innerHTML=`<h2 class="vt">All Jobs</h2><p class="sub">Search by client or job number · tap to open.</p>
-    ${ME.boss?`<button class="btn" style="width:100%;margin-bottom:8px" onclick="openTemplateList()">Edit standard processes ›</button>
-    <button class="btn" style="width:100%;margin-bottom:8px" onclick="openFieldDefsList()">Manage job fields ›</button>`:''}
+    ${ME.boss?`<button class="btn" style="width:100%;margin-bottom:8px" onclick="openTemplateList()">Edit standard processes ›</button>`:''}
+    ${(ME.boss||ME.coAdmin)?`<button class="btn" style="width:100%;margin-bottom:8px" onclick="openFieldDefsList()">Manage job fields ›</button>`:''}
     <button class="btn" style="width:100%;margin-bottom:14px" onclick="downloadReport()">Download report (.xlsx)</button>
     <input class="search" placeholder="Search by client or job number…" value="${JOB_Q.replace(/"/g,'&quot;')}" oninput="JOB_Q=this.value;drawCards()">
     <div id="ordList"></div>`;
@@ -977,10 +991,10 @@ function renderJobs(){
 }
 function downloadReport(){
   const defs=DB.fieldDefs;
-  const rows=[['REPORT'],[],['PROGRAM','SS NO.',...defs.map(d=>d.label.toUpperCase()),'STATUS (DISPATCHED/RUNNING)']];
+  const rows=[['REPORT'],[],['PROGRAM','SS NO.',...defs.map(d=>d.label.toUpperCase()),'STATUS (DISPATCHED/RUNNING/ON HOLD)']];
   DB.jobs.slice().sort((a,b)=>a.start.localeCompare(b.start)).forEach(o=>{
     const ssNo=o.code.slice(o.client.length+1);
-    const status=isJobDone(o.id)?'DISPATCHED':'RUNNING';
+    const status=isJobDone(o.id)?'DISPATCHED':o.onHold?'ON HOLD':'RUNNING';
     rows.push([o.client,ssNo,...defs.map(d=>(o.customFields||{})[d.fieldKey]||''),status]);
   });
   const ws=XLSX.utils.aoa_to_sheet(rows);
@@ -1104,7 +1118,7 @@ function drawCards(){
   list=list.map(o=>({o,d:isJobDone(o.id)?1:0})).sort((a,b)=>a.d-b.d||b.o.start.localeCompare(a.o.start)).map(x=>x.o);
   const box=document.getElementById('ordList'); if(!box)return;
   const emptyMsg = DB.jobs.length===0
-    ? `No jobs yet ${ME&&ME.boss?'— tap + below to create the first one.':'— an admin needs to create the first one.'}`
+    ? `No jobs yet ${ME&&(ME.boss||ME.coAdmin)?'— tap + below to create the first one.':'— an admin needs to create the first one.'}`
     : 'No jobs match your search.';
   box.innerHTML=list.length?list.map(orderCard).join(''):`<div class="empty">${emptyMsg}</div>`;
 }
@@ -1114,12 +1128,12 @@ function orderCard(o){
   const lt=ts.filter(isDoneLate).length;
   const cc=jobCommentCount(o.id);
   const catLabel=(DB.templates[o.category]||{}).label||o.category;
-  return `<div class="job-card tap" onclick="openJob('${o.id}')">
+  return `<div class="job-card tap" onclick="openJob('${o.id}')" style="${o.onHold?'opacity:.62;filter:grayscale(.7)':''}">
     <div class="oc-top"><div style="flex:1"><div class="oc-code">${o.code} <span class="cat-chip">${catLabel}</span></div><div class="oc-style">${o.client}</div></div>
-      ${done?`<span class="badge b-done">✓ Done</span>`:`<span class="badge b-prog">${pct}%</span>`}</div>
+      ${o.onHold?`<span class="badge" style="background:var(--ink2);color:#fff">⏸ On hold</span>`:done?`<span class="badge b-done">✓ Done</span>`:`<span class="badge b-prog">${pct}%</span>`}</div>
     <div class="bar"><i style="width:${pct}%${done?';background:var(--green)':''}"></i></div>
     <div class="oc-stats"><span><b>${dn}</b>/${ts.length} done</span>
-      ${iss?`<span style="color:var(--red)"><b>${iss}</b> need attention</span>`:''}
+      ${iss&&!o.onHold?`<span style="color:var(--red)"><b>${iss}</b> need attention</span>`:''}
       ${lt?`<span style="color:var(--orange)"><b>${lt}</b> done late</span>`:''}
       ${cc?`<span class="cmt-chip">💬 ${cc}</span>`:''}
       <span>${done?`Completed <b>${fmtNice(jobCompletedDate(o.id))}</b>`:`Ship <b>${fmtNice(o.ship)}</b>`}</span></div>
@@ -1142,7 +1156,7 @@ function openJob(jid){
     ${o.comments.length?o.comments.slice().reverse().map(c=>{
       const unacked=needsAckJobComment(c);
       return `<div class="cmt" id="ocmt-${c.id}">
-        <div class="cmt-head"><span>${c.author} · ${fmtStamp(c.ts)}${c.editedAt?' (edited)':''}</span>${unacked?`<span class="badge b-idle" style="font-size:9.5px;padding:2px 7px">Not yet seen</span>`:''}</div>
+        <div class="cmt-head"><span>${c.author} · ${fmtStamp(c.ts)}${c.editedAt?' (edited)':''}</span>${unacked?`<span class="badge alert-badge">⚠ Not yet seen</span>`:''}</div>
         <div class="cmt-body">${c.text.replace(/</g,'&lt;')}</div>
         <div style="display:flex;gap:14px;margin-top:2px">
           ${canEditJobComment(c)?`<div class="cmt-edit" onclick="startEditJobComment('${jid}','${c.id}')">Edit</div>`:''}
@@ -1152,10 +1166,19 @@ function openJob(jid){
     <textarea class="note" id="newOrderComment" placeholder="Add an update…" rows="2"></textarea>
     <button class="btn" style="width:100%;margin-top:8px" onclick="submitJobComment('${jid}')">Add comment</button>
   </div>`;
+  const holdHistoryBlock=o.holds.length?`<div class="field" style="margin-bottom:14px"><label>Hold history</label>
+    ${o.holds.slice().reverse().map(h=>`<div class="dep-row" style="align-items:flex-start">
+        <span class="dep-name" style="line-height:1.5">
+          Paused ${fmtNice(h.pausedAt)} by ${h.pausedBy}${h.taskName?` on "${h.taskName}"`:''}${h.resumedAt?`<br>Resumed ${fmtNice(h.resumedAt)} by ${h.resumedBy}${h.resumeMode?` · ${h.resumeMode==='restart'?'task restart':'task resume'}`:''}`:'<br><b style="color:var(--orange)">Still on hold</b>'}
+        </span>
+      </div>`).join('')}
+    </div>`:'';
   const body=`<div class="grab"></div>
-    <h3>${o.code}${isJobDone(jid)?' <span class="badge b-done" style="vertical-align:middle">✓ Done</span>':''}</h3>
+    <h3>${o.code}${isJobDone(jid)?' <span class="badge b-done" style="vertical-align:middle">✓ Done</span>':''}${o.onHold?' <span class="badge alert-badge" style="vertical-align:middle">⏸ On hold</span>':''}</h3>
     <p class="mh-sub"><span class="cat-chip">${catLabel}</span> &nbsp;${o.client} · start ${fmtNice(o.start)} · ship ${fmtNice(o.ship)}</p>
     ${extras?`<p class="mh-sub" style="margin-top:2px">${extras}</p>`:''}
+    ${o.onHold?`<div class="card" style="background:var(--card2);margin:10px 0;padding:12px 14px"><b style="color:var(--orange)">⏸ This job is on hold</b><p class="waiting" style="margin-top:4px">Tasks can't be started or finished until it's resumed.</p></div>`:''}
+    ${holdHistoryBlock}
     <div class="bar" style="margin-bottom:5px"><i style="width:${Math.round(dn/ts.length*100)}%${isJobDone(jid)?';background:var(--green)':''}"></i></div>
     <p class="mh-sub">${dn}/${ts.length} tasks complete${cc?` · <span class="cmt-chip">💬 ${cc} comment${cc!==1?'s':''}</span>`:''}</p>
     <div class="row-btns" style="margin-bottom:14px">
@@ -1184,9 +1207,10 @@ function openJob(jid){
           <span class="badge ${m.c}">${m.l}</span></div>
         ${expanded?renderCommentTimeline(t):''}
       </div>`;}).join('')}
-    ${ME.boss?`<button class="btn" style="margin-top:8px" onclick="openFlowchart('job','${jid}')">Edit this job's process</button>
-    <button class="btn" style="margin-top:8px" onclick="openEditJob('${jid}')">Edit job details</button>
-    <button class="btn danger" style="margin-top:8px" onclick="promptDeleteJob('${jid}')">Delete job</button>`:''}
+    ${(ME.boss||ME.coAdmin)?`<button class="btn" style="margin-top:8px" onclick="openFlowchart('job','${jid}')">Edit this job's process</button>
+    <button class="btn" style="margin-top:8px" onclick="openEditJob('${jid}')">Edit job details</button>`:''}
+    ${ME.boss&&!isJobDone(jid)?(o.onHold?`<button class="btn primary" style="margin-top:8px" onclick="promptResumeJob('${jid}')">▶ Resume job</button>`:`<button class="btn" style="margin-top:8px" onclick="promptPauseJob('${jid}')">⏸ Put job on hold</button>`):''}
+    ${ME.boss?`<button class="btn danger" style="margin-top:8px" onclick="promptDeleteJob('${jid}')">Delete job</button>`:''}
     <button class="btn primary" style="margin-top:8px" onclick="closeModalRefresh()">Close</button>`;
   showSheet(body);
 }
@@ -1233,6 +1257,67 @@ function promptDeleteJob(jid){
   DB.jobs=DB.jobs.filter(x=>x.id!==jid);
   save(); closeModal(); switchTab('jobs');
   sbDelete('jobs',jid); // cascades tasks, task_edges, job_links, and their comments/reminders per the schema
+}
+/* ===== pause / resume — freezes a job's tasks in place without touching
+   its data. Resuming a task-in-progress asks how to treat the days already
+   spent on it (see resumeJob); either way the pause/resume dates stay on
+   the record so a long timeline is never a mystery. ===== */
+function promptPauseJob(jid){
+  if(!ME.boss)return;
+  const o=jobOf(jid);
+  if(o.onHold){alert('Already on hold.');return;}
+  if(!confirm('Put this job on hold? Tasks can’t be started or finished while paused — you can resume at any time.'))return;
+  pauseJob(jid);
+}
+async function pauseJob(jid){
+  const o=jobOf(jid);
+  const active=DB.tasks.find(t=>t.jid===jid&&t.status==='in_progress');
+  const hold={id:crypto.randomUUID(),taskId:active?active.id:null,taskName:active?active.name:null,
+    pausedAt:fmtISO(today()),resumedAt:null,resumeMode:null,pausedBy:ME.name,resumedBy:null};
+  o.holds.push(hold); o.onHold=true;
+  save(); openJob(jid);
+  await sbInsert('job_holds',{id:hold.id,job_id:jid,task_id:hold.taskId,task_name_snapshot:hold.taskName,paused_at:hold.pausedAt,created_by:ME.name});
+  sbUpdate('jobs',jid,{on_hold:true});
+}
+function promptResumeJob(jid){
+  if(!ME.boss)return;
+  const o=jobOf(jid);
+  const hold=o.holds.find(h=>!h.resumedAt);
+  if(!hold){alert('This job has no open hold to resume from.');return;}
+  const activeTask=hold.taskId?DB.tasks.find(t=>t.id===hold.taskId&&t.status==='in_progress'):null;
+  if(!activeTask){ resumeJob(jid,null); return; }
+  showSheet(`<div class="grab"></div><h3>Resume job</h3>
+    <p class="mh-sub">Paused ${fmtNice(hold.pausedAt)} on "${activeTask.name}". How should it continue?</p>
+    <button class="btn primary" style="width:100%;margin-top:6px" onclick="resumeJob('${jid}','resume')">Task resume</button>
+    <p class="waiting" style="margin:6px 2px 16px">Continues "${activeTask.name}" from the day it was on when paused — the days already spent still count, only the paused time shifts the schedule.</p>
+    <button class="btn" style="width:100%" onclick="resumeJob('${jid}','restart')">Task restart</button>
+    <p class="waiting" style="margin:6px 2px 16px">Begins "${activeTask.name}" again from day 1 today — the days spent before the pause don't count, and the schedule shifts to match.</p>
+    <button class="btn" style="width:100%;margin-top:4px" onclick="openJob('${jid}')">Cancel</button>`);
+}
+function resumeJob(jid,mode){
+  const o=jobOf(jid);
+  const hold=o.holds.find(h=>!h.resumedAt);
+  if(!hold)return;
+  const resumedAt=fmtISO(today());
+  const pauseGapDays=-daysFromToday(hold.pausedAt);
+  let extraDays=pauseGapDays;
+  const t=hold.taskId?DB.tasks.find(x=>x.id===hold.taskId):null;
+  if(t&&mode==='restart'){
+    extraDays=-daysFromToday(t.actualStart); // total days since this task's original start
+    t.actualStart=resumedAt;
+    sbUpdate('tasks',t.id,{actual_start:t.actualStart});
+  }else if(t&&mode==='resume'){
+    t.actualStart=fmtISO(addDays(parseD(t.actualStart),pauseGapDays));
+    sbUpdate('tasks',t.id,{actual_start:t.actualStart});
+  }
+  o.holdDays=(o.holdDays||0)+extraDays;
+  hold.resumedAt=resumedAt; hold.resumeMode=mode; hold.resumedBy=ME.name;
+  o.onHold=false;
+  recomputePlanned(jid,true);
+  save(); openJob(jid);
+  sbUpdate('jobs',jid,{on_hold:false,hold_days:o.holdDays});
+  sbUpdate('job_holds',hold.id,{resumed_at:resumedAt,resume_mode:mode,resumed_by:ME.name});
+  syncPlannedStarts(jid);
 }
 function openAddLink(jid){
   showSheet(`<div class="grab"></div><h3>Add a link</h3>
@@ -1310,7 +1395,10 @@ function openTask(id,backOid){
   if(canAct){
     if(t.status==='pending'&&u.unlocked) actions+=`<button class="btn primary" style="width:100%" onclick="startTask('${t.id}','${backOid||''}')">Start task</button>`;
     else if(t.status==='in_progress') actions+=`<button class="btn primary" style="width:100%" onclick="finishTask('${t.id}','${backOid||''}')">Mark finished</button>`;
-    if(boss&&t.status!=='pending') actions+=`<button class="btn" style="width:100%;margin-top:8px" onclick="reopenTask('${t.id}','${backOid||''}')">Reopen / undo</button>`;
+    if(boss&&t.status!=='pending'){
+      if(canUndoTask(t)) actions+=`<button class="btn" style="width:100%;margin-top:8px" onclick="reopenTask('${t.id}','${backOid||''}')">Reopen / undo</button>`;
+      else actions+=`<p class="waiting" style="margin-top:8px">Can't undo — a later task has already started. Undo that one first.</p>`;
+    }
   }
   if(boss&&t.status!=='completed') actions+=`<button class="btn" style="width:100%;margin-top:8px" onclick="forceCompleteTask('${t.id}','${backOid||''}')">Mark as done — skip the normal steps</button>`;
 
@@ -1340,7 +1428,7 @@ function openTask(id,backOid){
         const resolvedNote = r.status==='resolved' ? `<div class="waiting" style="margin-top:4px">Resolved ${fmtStamp(r.resolvedAt)} by ${r.resolvedBy}${r.resolvedVia==='auto-done'?' — task marked done':r.resolvedVia==='comment'?' — replied':''}</div>` : '';
         const canResolve = r.status==='open' && canResolveReminder(t,r);
         return `<div class="cmt" id="rem-${r.id}">
-          <div class="cmt-head"><span>${r.createdBy} → ${t.owner} · for ${fmtNice(r.dueDate)}</span><span class="badge ${rm.c}" style="font-size:9.5px;padding:2px 7px">${rm.l}</span></div>
+          <div class="cmt-head"><span>${r.createdBy} → ${t.owner} · for ${fmtNice(r.dueDate)}</span><span class="badge ${rm.c}${rs==='overdue'?' alert-badge':''}" style="${rs==='overdue'?'':'font-size:12px;padding:4px 9px'}">${rs==='overdue'?'⚠ ':''}${rm.l}</span></div>
           <div class="cmt-body">${r.text.replace(/</g,'&lt;')}</div>
           ${resolvedNote}
           ${canResolve?`<div class="row-btns" style="margin-top:8px">
@@ -1357,7 +1445,7 @@ function openTask(id,backOid){
       ${t.comments.length?t.comments.slice().reverse().map(c=>{
         const unacked=needsAck(t,c);
         return `<div class="cmt" id="cmt-${c.id}">
-          <div class="cmt-head"><span>${c.author} · ${fmtStamp(c.ts)}${c.editedAt?' (edited)':''}</span>${unacked?`<span class="badge b-idle" style="font-size:9.5px;padding:2px 7px">Not yet seen by ${t.owner}</span>`:''}</div>
+          <div class="cmt-head"><span>${c.author} · ${fmtStamp(c.ts)}${c.editedAt?' (edited)':''}</span>${unacked?`<span class="badge alert-badge">⚠ Not yet seen by ${t.owner}</span>`:''}</div>
           <div class="cmt-body">${c.text.replace(/</g,'&lt;')}</div>
           <div style="display:flex;gap:14px;margin-top:2px">
             ${canEditComment(c)?`<div class="cmt-edit" onclick="startEditComment('${t.id}','${c.id}','${backOid||''}')">Edit</div>`:''}
@@ -1386,6 +1474,7 @@ function openTask(id,backOid){
 function reopenModal(id,backOid){ openTask(id,backOid); rerender(); }
 function startTask(id,backOid){
   const t=DB.tasks.find(x=>x.id===id);
+  if(jobOf(t.jid).onHold){alert('This job is on hold — resume it before starting tasks.');return;}
   if(!unlockInfo(t).unlocked){alert('This task is still Upcoming — a previous task needs to finish or start first.');return;}
   t.status='in_progress'; t.actualStart=fmtISO(today());
   save(); reopenModal(id,backOid);
@@ -1393,15 +1482,23 @@ function startTask(id,backOid){
 }
 function finishTask(id,backOid){
   const t=DB.tasks.find(x=>x.id===id);
+  if(jobOf(t.jid).onHold){alert('This job is on hold — resume it before finishing tasks.');return;}
   t.status='completed'; t.actualEnd=fmtISO(today());
   autoResolveReminders(t);
   save(); reopenModal(id,backOid);
   sbUpdate('tasks',id,{status:t.status,actual_end:t.actualEnd});
   syncReminders(t);
 }
+// Only the most-downstream done/in-progress task can be undone — undoing an
+// earlier one while a later task has already moved would rewrite history
+// the later task's own dates and lateness already depend on.
+function canUndoTask(t){
+  return outEdges(t.id).every(e=>{ const s=DB.tasks.find(x=>x.id===e.to); return !s||s.status==='pending'; });
+}
 function reopenTask(id,backOid){
-  if(!confirm('Reopen this task? This clears its start/finish record.'))return;
   const t=DB.tasks.find(x=>x.id===id);
+  if(!canUndoTask(t)){alert("Can't undo this task — a later task has already started. Undo that one first.");return;}
+  if(!confirm('Reopen this task? This clears its start/finish record.'))return;
   t.status='pending'; t.actualStart=null; t.actualEnd=null;
   save(); reopenModal(id,backOid);
   sbUpdate('tasks',id,{status:t.status,actual_start:null,actual_end:null});
@@ -1587,7 +1684,7 @@ function openFlowchart(mode,key){
   const ids=g.tasks.map(t=>t.id);
   const ranks=computeRanks(ids,g.edges);
   const seq=seqNumbers(ids,g.edges);
-  const canEdit = mode==='template' || ME.boss;
+  const canEdit = mode==='template' || ME.boss || ME.coAdmin;
   const svg=buildFlowchartSVG(g.tasks,g.edges,ranks,seq,mode,key,canEdit);
   const back = mode==='template' ? `openTemplateList()` : `openJob('${key}')`;
   const hint = mode==='template'
@@ -1725,7 +1822,7 @@ function buildFlowchartSVG(tasks,edges,ranks,seq,mode,key,canEdit){
 /* ---- live pointer-driven drag: reposition nodes, drag-to-connect, tap-to-edit a line ---- */
 function wireFlowchartDrag(mode,key){
   const svg=document.getElementById('fcSvg'); if(!svg)return;
-  const canEdit = mode==='template' || ME.boss;
+  const canEdit = mode==='template' || ME.boss || ME.coAdmin;
   if(!canEdit)return; // read-only viewers get a static diagram, no handles/dragging
 
   const NODE_W=152;
@@ -2085,7 +2182,7 @@ function deleteNode(mode,key,taskId){
     newEdges.forEach(ne=>{ sbInsert('chain_edges',{chain_id:key,from_task:ne.from,to_task:ne.to,edge_type:ne.type}); });
   }else{
     const t=DB.tasks.find(x=>x.id===taskId);
-    if(t.status!=='pending'){alert('Only tasks that have not started can be removed.');return;}
+    if(t.status!=='pending'&&!(ME.boss||ME.coAdmin)){alert('Only tasks that have not started can be removed.');return;}
     doRemoveTask(taskId);
     openFlowchart('job',key);
   }
@@ -2284,7 +2381,7 @@ function renderDash(){
     h+=dueReminders.map(({r,t})=>{ const rs=reminderState(r), rm=RSM[rs];
       return `<div class="dash-job tap" onclick="openTask('${t.id}','${t.jid}')">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:13.5px;margin-bottom:3px">
-          <b>${t.owner}</b><span class="badge ${rm.c}" style="font-size:9.5px;padding:2px 7px">${rm.l}</span></div>
+          <b>${t.owner}</b><span class="badge ${rm.c}${rs==='overdue'?' alert-badge':''}" style="${rs==='overdue'?'':'font-size:12px;padding:4px 9px'}">${rs==='overdue'?'⚠ ':''}${rm.l}</span></div>
         <div style="font-size:13px;color:var(--ink2)">${r.text.replace(/</g,'&lt;')}</div>
         <div class="waiting" style="margin-top:3px">${t.name} · ${jobOf(t.jid).code} · reminder date ${fmtNice(r.dueDate)}</div>
       </div>`;
@@ -2456,7 +2553,7 @@ function newJobBody(){
     </div>
     <div class="field"><label>Tasks to be created</label>
       ${tpl.tasks.length?`<div class="steps-preview">${tpl.tasks.map((t,i)=>`<div><span>${i+1}. ${t.name}</span><span class="so">${t.owner} · ${t.days}d</span></div>`).join('')}</div>`:`<p class="waiting" style="margin:0 0 8px">This chain has no tasks yet.</p>`}
-      <p class="waiting" style="margin:8px 0 0">This is a preview, not the editor. <span style="color:var(--blue);font-weight:600;cursor:pointer" onclick="openFlowchart('template','${NEW_CAT}')">Edit the ${tpl.label} template ›</span></p>
+      <p class="waiting" style="margin:8px 0 0">This is a preview, not the editor.${ME.boss?` <span style="color:var(--blue);font-weight:600;cursor:pointer" onclick="openFlowchart('template','${NEW_CAT}')">Edit the ${tpl.label} template ›</span>`:''}</p>
     </div>
     <div class="row-btns"><button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary" onclick="createJob()">Create job</button></div>`;
@@ -2495,8 +2592,8 @@ function downloadFullBackup(){
 
   sheet('Settings',['Notification alert threshold (days)'],[[DB.threshold]]);
 
-  sheet('Jobs',['Code','Client','Process chain','Start date','Ship date',...DB.fieldDefs.map(d=>d.label)],
-    sortedOrders.map(o=>[o.code,o.client,chainLabel(o.category),o.start,o.ship||'',...DB.fieldDefs.map(d=>(o.customFields||{})[d.fieldKey]||'')]));
+  sheet('Jobs',['Code','Client','Process chain','Start date','Ship date','On hold','Total hold days',...DB.fieldDefs.map(d=>d.label)],
+    sortedOrders.map(o=>[o.code,o.client,chainLabel(o.category),o.start,o.ship||'',o.onHold?'Yes':'No',o.holdDays||0,...DB.fieldDefs.map(d=>(o.customFields||{})[d.fieldKey]||'')]));
 
   sheet('Tasks',['Job','Task name','Owner','Days allowed','Status','Actual start','Actual end','Planned start'],
     sortedTasks.map(t=>[jobCode(t.jid),t.name,t.owner,t.days,t.status,t.actualStart||'',t.actualEnd||'',t.plannedStart||'']));
@@ -2504,17 +2601,25 @@ function downloadFullBackup(){
   sheet('Task dependencies',['Job','From task','To task','Type'],
     DB.edges.slice().sort((a,b)=>orderSeq.get(a.jid)-orderSeq.get(b.jid)).map(e=>[jobCode(e.jid),taskName(e.from),taskName(e.to),e.type]));
 
-  sheet('Comments',['Job','Task','Author','Text','Posted','Edited','Acknowledged'],
-    sortedTasks.flatMap(t=>t.comments.slice().sort((a,b)=>a.ts.localeCompare(b.ts)).map(c=>[jobCode(t.jid),t.name,c.author,c.text,c.ts,c.editedAt||'',c.acked?'Yes':'No'])));
+  // Task owner ("addressed to") is included alongside author/creator so a comment or
+  // reminder still makes sense as context on its own, without cross-referencing the Tasks sheet.
+  sheet('Comments',['Job','Task','Task owner','Author','Text','Posted','Edited','Acknowledged'],
+    sortedTasks.flatMap(t=>t.comments.slice().sort((a,b)=>a.ts.localeCompare(b.ts)).map(c=>[jobCode(t.jid),t.name,t.owner,c.author,c.text,c.ts,c.editedAt||'',c.acked?'Yes':'No'])));
 
-  sheet('Reminders',['Job','Task','Text','Due date','Created by','Created','Status','Resolved at','Resolved by','Resolved via','Resolved by comment'],
+  sheet('Job comments',['Job','Author','Text','Posted','Edited','Acknowledged'],
+    sortedOrders.flatMap(o=>o.comments.slice().sort((a,b)=>a.ts.localeCompare(b.ts)).map(c=>[o.code,c.author,c.text,c.ts,c.editedAt||'',c.acked?'Yes':'No'])));
+
+  sheet('Reminders',['Job','Task','Task owner','Text','Due date','Created by','Created','Status','Resolved at','Resolved by','Resolved via','Resolved by comment'],
     sortedTasks.flatMap(t=>t.reminders.slice().sort((a,b)=>a.createdAt.localeCompare(b.createdAt)).map(r=>{
       const replyText=r.replyCommentId?(t.comments.find(c=>c.id===r.replyCommentId)||{}).text||'':'';
-      return [jobCode(t.jid),t.name,r.text,r.dueDate,r.createdBy,r.createdAt,r.status,r.resolvedAt||'',r.resolvedBy||'',r.resolvedVia||'',replyText];
+      return [jobCode(t.jid),t.name,t.owner,r.text,r.dueDate,r.createdBy,r.createdAt,r.status,r.resolvedAt||'',r.resolvedBy||'',r.resolvedVia||'',replyText];
     })));
 
   sheet('Job links',['Job','Label','URL','Added by','Added on'],
     sortedOrders.flatMap(o=>o.links.slice().sort((a,b)=>a.ts.localeCompare(b.ts)).map(l=>[o.code,l.label||'',l.url,l.addedBy,l.ts])));
+
+  sheet('Job holds',['Job','Paused at','Paused by','Task at pause','Resumed at','Resumed by','Resume mode'],
+    sortedOrders.flatMap(o=>o.holds.slice().sort((a,b)=>a.pausedAt.localeCompare(b.pausedAt)).map(h=>[o.code,h.pausedAt,h.pausedBy,h.taskName||'—',h.resumedAt||'Still on hold',h.resumedBy||'',h.resumeMode==='restart'?'Task restart':h.resumeMode==='resume'?'Task resume':''])));
 
   sheet('Process chains',['Chain','Description'],
     Object.entries(DB.templates).map(([id,tpl])=>[tpl.label,tpl.blurb||'']).sort((a,b)=>a[0].localeCompare(b[0])));
@@ -2556,7 +2661,7 @@ function renderTeam(){
   h+=PEOPLE.map((p,i)=>`<div class="team-card">
       <div class="avatar" style="background:${p.color}">${initials(p.name)}</div>
       <div style="flex:1;min-width:0">
-        <div class="tc-name">${p.name}${p.boss?'<span class="boss-tag">ADMIN</span>':''}</div>
+        <div class="tc-name">${p.name}${p.boss?'<span class="boss-tag">ADMIN</span>':p.coAdmin?'<span class="boss-tag" style="background:var(--blue-tint);color:var(--blue)">CO-ADMIN</span>':''}</div>
         <div class="tc-meta">${p.phone||'no number'}</div>
         <div class="tc-meta">${openCount(p.name)} open task${openCount(p.name)!==1?'s':''}</div>
       </div>
@@ -2606,6 +2711,8 @@ function openPersonEditor(name){
     <div class="field"><label>Mobile number</label><input id="pe-phone" value="${isEdit?(p.phone||'').replace(/"/g,'&quot;'):''}" placeholder="+91 …"></div>
     <div class="toggle"><input type="checkbox" id="pe-boss" ${isEdit&&p.boss?'checked':''}>
       <div><b>Admin access</b><p>Can manage the team, create jobs, set deadlines and adjust alerts.</p></div></div>
+    <div class="toggle"><input type="checkbox" id="pe-coadmin" ${isEdit&&p.coAdmin?'checked':''}>
+      <div><b>Co-admin access</b><p>Can create new jobs — process, fields, and setup — but can't manage the team, alerts, standard process templates, or update other people's tasks.</p></div></div>
     <div class="row-btns">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary" onclick="savePerson(${isEdit?`'${name.replace(/'/g,"\\'")}'`:'null'})">${isEdit?'Save':'Add'}</button>
@@ -2638,6 +2745,7 @@ async function savePerson(oldName){
   const name=document.getElementById('pe-name').value.trim();
   const phone=document.getElementById('pe-phone').value.trim();
   const boss=document.getElementById('pe-boss').checked;
+  const coAdmin=document.getElementById('pe-coadmin').checked;
   if(!name){alert('Please enter a name.');return;}
   const clash=PEOPLE.find(p=>p.name.toLowerCase()===name.toLowerCase()&&p.name!==oldName);
   if(clash){alert('Another person already has that name.');return;}
@@ -2648,15 +2756,15 @@ async function savePerson(oldName){
       Object.values(DB.templates).forEach(tpl=>tpl.tasks.forEach(t=>{if(t.owner===oldName)t.owner=name;}));
       if(ME&&ME.name===oldName)ME.name=name;
     }
-    p.name=name;p.phone=phone;p.boss=boss;
-    sbUpdate('people',p.id,{name,phone:phone||null,is_admin:boss});
+    p.name=name;p.phone=phone;p.boss=boss;p.coAdmin=coAdmin;
+    sbUpdate('people',p.id,{name,phone:phone||null,is_admin:boss,is_co_admin:coAdmin});
     save();closeModal();
     renderTeam();renderLoginOptions();
   }else{
     closeModal();
-    const row=await sbInsert('people',{name,phone:phone||null,is_admin:boss,color:nextColor(),tutorial_seen:false});
+    const row=await sbInsert('people',{name,phone:phone||null,is_admin:boss,is_co_admin:coAdmin,color:nextColor(),tutorial_seen:false});
     if(!row){alert('Could not add person — check your connection and try again.');return;}
-    PEOPLE.push({id:row.id,name,phone,boss,color:row.color,tutorialSeen:false,authUserId:null});
+    PEOPLE.push({id:row.id,name,phone,boss,coAdmin,color:row.color,tutorialSeen:false,authUserId:null});
     save();renderTeam();renderLoginOptions();
   }
   if(ME){const a=document.getElementById('hdrAvatar');a.style.background=personColor(ME.name);a.textContent=initials(ME.name);
@@ -2794,14 +2902,14 @@ async function sbDelete(table,id){ const {error}=await sb.from(table).delete().e
 
 // ---- fetch everything and rebuild the local DB shape the rest of the app already expects ----
 async function loadFromSupabase(){
-  const [people,chains,chainTasks,chainEdges,fieldDefs,fieldOptions,jobsRes,jobLinks,jobComments,tasks,taskEdges,comments,reminders,settings] = await Promise.all([
+  const [people,chains,chainTasks,chainEdges,fieldDefs,fieldOptions,jobsRes,jobLinks,jobComments,jobHolds,tasks,taskEdges,comments,reminders,settings] = await Promise.all([
     sb.from('people').select('*'), sb.from('process_chains').select('*'), sb.from('chain_tasks').select('*'),
     sb.from('chain_edges').select('*'), sb.from('job_field_defs').select('*').order('sort_order'), sb.from('field_options').select('*').order('sort_order'),
-    sb.from('jobs').select('*'), sb.from('job_links').select('*'), sb.from('job_comments').select('*'), sb.from('tasks').select('*'), sb.from('task_edges').select('*'),
+    sb.from('jobs').select('*'), sb.from('job_links').select('*'), sb.from('job_comments').select('*'), sb.from('job_holds').select('*'), sb.from('tasks').select('*'), sb.from('task_edges').select('*'),
     sb.from('task_comments').select('*'), sb.from('task_reminders').select('*'), sb.from('app_settings').select('*').single(),
   ]);
   const newDB={
-    people:(people.data||[]).map(p=>({id:p.id,name:p.name,phone:p.phone||'',color:p.color,boss:p.is_admin,tutorialSeen:p.tutorial_seen,authUserId:p.auth_user_id,password:''})),
+    people:(people.data||[]).map(p=>({id:p.id,name:p.name,phone:p.phone||'',color:p.color,boss:p.is_admin,coAdmin:!!p.is_co_admin,tutorialSeen:p.tutorial_seen,authUserId:p.auth_user_id,password:''})),
     templates:{}, jobs:[], tasks:[], edges:[],
     fieldDefs:(fieldDefs.data||[]).map(d=>({id:d.id,label:d.label,fieldKey:d.field_key,type:d.type,sortOrder:d.sort_order,required:d.required})),
     fieldOptions:{},
@@ -2814,8 +2922,10 @@ async function loadFromSupabase(){
     edges:(chainEdges.data||[]).filter(e=>e.chain_id===c.id).map(e=>({from:e.from_task,to:e.to_task,type:e.edge_type})) }; });
   (jobsRes.data||[]).forEach(o=>{ newDB.jobs.push({id:o.id,code:o.code,client:o.client,
     category:o.chain_id,start:o.start_date,ship:o.ship_date,customFields:o.custom_fields||{},
+    onHold:!!o.on_hold,holdDays:o.hold_days||0,
     links:(jobLinks.data||[]).filter(l=>l.job_id===o.id).map(l=>({id:l.id,url:l.url,label:l.label||'',addedBy:l.added_by,ts:l.created_at})),
-    comments:(jobComments.data||[]).filter(c=>c.job_id===o.id).map(c=>({id:c.id,text:c.text,author:c.author,ts:c.created_at,editedAt:c.edited_at,acked:!!c.acked}))}); });
+    comments:(jobComments.data||[]).filter(c=>c.job_id===o.id).map(c=>({id:c.id,text:c.text,author:c.author,ts:c.created_at,editedAt:c.edited_at,acked:!!c.acked})),
+    holds:(jobHolds.data||[]).filter(h=>h.job_id===o.id).map(h=>({id:h.id,taskId:h.task_id,taskName:h.task_name_snapshot,pausedAt:h.paused_at,resumedAt:h.resumed_at,resumeMode:h.resume_mode,pausedBy:h.created_by,resumedBy:h.resumed_by})).sort((a,b)=>a.pausedAt.localeCompare(b.pausedAt))}); });
   (tasks.data||[]).forEach(t=>{ newDB.tasks.push({id:t.id,jid:t.job_id,name:t.name,owner:t.owner_name,days:t.days,status:t.status,
     actualStart:t.actual_start,actualEnd:t.actual_end,plannedStart:t.planned_start,
     comments:(comments.data||[]).filter(c=>c.task_id===t.id).map(c=>({id:c.id,text:c.text,author:c.author,ts:c.created_at,editedAt:c.edited_at,acked:!!c.acked})),
@@ -2842,7 +2952,7 @@ async function sbSignOut(){ try{await sb.auth.signOut();}catch(e){} }
 let REALTIME_CHANNEL=null, REALTIME_DEBOUNCE=null;
 function setupRealtime(){
   if(REALTIME_CHANNEL)return;
-  const tables=['people','process_chains','chain_tasks','chain_edges','job_field_defs','field_options','jobs','job_links','job_comments','tasks','task_edges','task_comments','task_reminders','app_settings'];
+  const tables=['people','process_chains','chain_tasks','chain_edges','job_field_defs','field_options','jobs','job_links','job_comments','job_holds','tasks','task_edges','task_comments','task_reminders','app_settings'];
   let ch=sb.channel('db-changes');
   tables.forEach(t=>{ ch=ch.on('postgres_changes',{event:'*',schema:'public',table:t},onRealtimeChange); });
   ch.subscribe();
@@ -2869,7 +2979,7 @@ async function bootFromSupabase(){
     console.error('boot: people fetch failed',peopleErr);
     return;
   }
-  PEOPLE=(peopleRows||[]).map(p=>({id:p.id,name:p.name,phone:p.phone||'',color:p.color,boss:p.is_admin,tutorialSeen:p.tutorial_seen,authUserId:p.auth_user_id}));
+  PEOPLE=(peopleRows||[]).map(p=>({id:p.id,name:p.name,phone:p.phone||'',color:p.color,boss:p.is_admin,coAdmin:!!p.is_co_admin,tutorialSeen:p.tutorial_seen,authUserId:p.auth_user_id}));
   DB={people:PEOPLE,templates:{},jobs:[],tasks:[],edges:[],fieldDefs:[],fieldOptions:{},seq:1,threshold:5,notifyDays:[1,2,3,4,5]};
   renderLoginOptions();
 

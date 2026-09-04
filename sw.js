@@ -1,14 +1,14 @@
-// Amber Process Tracker — service worker for push notifications.
+// Workline — service worker for push notifications.
 // This file must be deployed at the root of the site (same folder as
 // index.html) for its notification scope to cover the whole app.
 
 self.addEventListener('push', (event) => {
   let data = {};
-  try { data = event.data ? event.data.json() : {}; } catch (e) { data = { title: 'Amber Process Tracker', body: event.data ? event.data.text() : '' }; }
+  try { data = event.data ? event.data.json() : {}; } catch (e) { data = { title: 'Workline', body: event.data ? event.data.text() : '' }; }
   event.waitUntil(
-    self.registration.showNotification(data.title || 'Amber Process Tracker', {
+    self.registration.showNotification(data.title || 'Workline', {
       body: data.body || '',
-      tag: data.tag || 'amber-reminder',
+      tag: data.tag || 'workline-reminder',
       renotify: true,
       data: { url: data.url || '/' },
     })
